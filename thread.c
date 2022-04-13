@@ -4,6 +4,8 @@
 #include <random.h>
 #include <stdio.h>
 #include <string.h>
+#include <list.h>
+#include "threads/malloc.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
@@ -58,7 +60,7 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
-
+list_less_func less;
 static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
@@ -166,6 +168,7 @@ tid_t
 thread_create (const char *name, int priority,
                thread_func *function, void *aux) 
 {
+  int i=0;
   struct thread *t;
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
@@ -198,8 +201,19 @@ thread_create (const char *name, int priority,
   sf->eip = switch_entry;
   sf->ebp = 0;
 
+
+  t->fdt = (struct file **) malloc(sizeof (struct file *) * 64);
+  t->next_fd = 2;
+  
+  if(strcmp(t->name,"idle"))
+  list_push_back(&thread_current()->child_list,&t->child_elem);
+  t->father_tid = thread_current()->tid;
+
   /* Add to run queue. */
   thread_unblock (t);
+  if(priority > thread_current()->priority){
+    thread_yield(); 
+  }
 
   return tid;
 }
@@ -238,6 +252,7 @@ thread_unblock (struct thread *t)
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
   list_push_back (&ready_list, &t->elem);
+  list_sort(&ready_list, less, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -281,15 +296,35 @@ void
 thread_exit (void) 
 {
   ASSERT (!intr_context ());
-
+  struct thread *t;
+  struct list_elem *e;
+  struct list *l =&thread_current()->child_sema.waiters;
+    for (e = list_begin (&all_list); e != list_end (&all_list);
+       e = list_next (e))
+    {
+      t = list_entry (e, struct thread, allelem);
+      if(t->tid == thread_current()->father_tid){
+      t->pdt[t->next_pd] = thread_current()->tid;
+      t->est[t->next_pd++] = thread_current()->exit_status; 
+      sema_up(&t->child_sema);
+      break;
+      }
+    }  
 #ifdef USERPROG
   process_exit ();
 #endif
-
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
+  int i;
+  for(i=2;i<thread_current()->next_fd;i++)
+  file_close(thread_current()->fdt[i]);
+  free(thread_current()->fdt);
+  free(thread_current()->pdt);
+  free(thread_current()->est);
+  if(&thread_current()->child_elem != NULL && thread_current()->child_elem.prev != NULL && thread_current()->child_elem.next != NULL)
+  list_remove (&thread_current()->child_elem);
   list_remove (&thread_current()->allelem);
   thread_current ()->status = THREAD_DYING;
   schedule ();
@@ -310,6 +345,7 @@ thread_yield (void)
   if (cur != idle_thread) 
     list_push_back (&ready_list, &cur->elem);
   cur->status = THREAD_READY;
+  list_sort(&ready_list, less, NULL);
   schedule ();
   intr_set_level (old_level);
 }
@@ -463,25 +499,16 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
-
+  sema_init(&t->child_sema, 0);
+  sema_init(&t->sema_exec, 0);
+  list_init(&t->child_list);
+  t->exit_status = -1;
+  t->load_status = 0;
+  t->deny_write = 0;
+  t->next_pd = 0;
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
-
-#ifdef USERPROG
-  /* Owned by userprog/process.c. */
-  sema_init(&t->exit_wait, 0); 
-  sema_init(&t->status_wait, 0);
-  sema_init(&t->load_wait, 0);  
-  list_init(&t->child);
-  list_push_back (&running_thread ()->child, &t->child_elem);
-  t->parent = running_thread ();
-  t->running_file = NULL;
-  for (int i = 0; i < 3; i++)
-    t->signal_handler[i] = NULL;
-  for (int i = 0; i < 128; i++)
-    t->fd_table[i] = NULL; 
-#endif
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -597,3 +624,13 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+bool less(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  struct thread *t, *c;
+  t = list_entry (a , struct thread, elem);
+  c = list_entry (b , struct thread, elem);
+  if(t->priority>c->priority)
+  return 1;
+  return 0;
+}
