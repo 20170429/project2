@@ -97,16 +97,20 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    struct semaphore exit_wait;     
-    struct semaphore status_wait;       
-    struct semaphore load_wait;     
-    struct file *fd_table[128];          
-    struct file *running_file;        
-    struct list child;
-    struct thread *parent;                  
-    struct list_elem child_elem;       
-    int exit_status;
-    void (*signal_handler[3])(void);                     
+    struct list child_list;
+    struct list_elem child_elem;
+    struct semaphore child_sema;
+    tid_t father_tid;  //tid of father(parent)
+    struct semaphore sema_exec;  //parent waits child finishing execution
+    struct file **fdt;  //file descriptor table
+    struct file *running_file;  //for rox
+    int *pdt, *est;  //process descriptor table. exit status table
+    int next_pd;  // current end position of process descriptor table
+    int next_fd;  // same for file descriptor table
+    int exit_status; 
+    int load_status;
+    bool deny_write;
+    void (*signal_handler[3])(void);      
 #endif
 
     /* Owned by thread.c. */
