@@ -136,7 +136,12 @@ least case의 경우 당연히 한 번이며 mapping에 실패하여도 page end
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
 
-system call 내에서 wait를 호출하면 process_wait를 호출한다. process_wait는 현재 실행 중인 thread가 자신의 children이 process를 마치기 전에 먼저 종료되지 않게하는 기능의 함수이다. process가 child를 낳고 낳는 상황 또한 고려하기 위하여 process가 자신의 child만을 기다릴 수 있도록 implement하였다. thread.h 내에 thread structure에 semaphore structure를 추가하여 child가 만들어지고 child가 process를 수행하게 되면 sema_down을 통해 자신과 child만의 공유자원이 발생할 때까지 기다릴 수 있게 만들었다. 그 다음 child가 exit 단계에 접어들 때 sema_up을 호출함으로써 공유자원이 발생하게 되는 순간이 child가 종료되는 순간이 되게끔 하여 wait를 구현하였다. 이때 wait의 return value는  tid가 invalid하거나 child가 kernel에 의해 terminated 되었으면 -1을 return하며 child_tid를 가진 thread가 자신의 자식이 맞다면 이 child가 종료될 당시에 return했던 exit_status를 반환한다. 만약 이후에도 같은 process의 wait을 또 호출하면 그때에는 -1을 return하게끔 수정하였다.
+system call 내에서 wait를 호출하면 process_wait를 호출한다. process_wait는 현재 실행 중인 thread가 자신의 children이 process를 마치기 전에 먼저 종료되지 않게하는 기능의 함수이다. 
+process가 child를 낳고 낳는 상황 또한 고려하기 위하여 process가 자신의 child만을 기다릴 수 있도록 implement하였다.
+thread.h 내에 thread structure에 semaphore structure를 추가하여 child가 만들어지고 child가 process를 수행하게 되면 sema_down을 통해 자신과 child만의 공유자원이 발생할 때까지 기다릴 수 있게 만들었다. 
+그 다음 child가 exit 단계에 접어들 때 sema_up을 호출함으로써 공유자원이 발생하게 되는 순간이 child가 종료되는 순간이 되게끔 하여 wait를 구현하였다. 
+이때 wait의 return value는  tid가 invalid하거나 child가 kernel에 의해 terminated 되었으면 -1을 return하며 child_tid를 가진 thread가 자신의 자식이 맞다면 이 child가 종료될 당시에 return했던 exit_status를 반환한다.
+만약 이후에도 같은 process의 wait을 또 호출하면 그때에는 -1을 return하게끔 수정하였다.
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
