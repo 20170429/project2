@@ -204,7 +204,9 @@ Method1을 사용하였다. is_user_vaddr을 활용하여 user provided pointer�
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
 
-struct thread에 새로운 member로 **fdt와 next_fd를 추가하였다. next_fd는 다음에 실행되는 file이 저장되는 위치를 가르킨다. 따라서 이러한 방식으로 file descriptor table을 구현하면 for문을 활용하지 않고 보다 빠르게 file을 table에 저장할 수 있다. 하지만 중간에 close된 file이 생겨 빈 공간이 생겼을 때 채우지 못하기 때문에 메모리적으로 비효율적인 측면이 존재한다.
+struct thread에 새로운 member로 **fdt와 next_fd를 추가하였다. next_fd는 다음에 실행되는 file이 저장되는 위치를 가르킨다. 
+따라서 이러한 방식으로 file descriptor table을 구현하면 for문을 활용하지 않고 보다 빠르게 file을 table에 저장할 수 있다. 
+하지만 중간에 close된 file이 생겨 빈 공간이 생겼을 때 채우지 못하기 때문에 메모리적으로 비효율적인 측면이 존재한다.
 
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
