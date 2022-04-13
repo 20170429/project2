@@ -136,10 +136,7 @@ least case의 경우 당연히 한 번이며 mapping에 실패하여도 page end
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
 
-system call 내에서 wait를 호출하면 process_wait를 호출한다. process_wait는 현재 실행 중인 thread가 자신의 children이 process를 마치기 전에 먼저 종료되지 않게 하기 위한 함수이다. process가 child를 낳고 낳는 상황 또한 고려하기 위하여 process가 자신의 child만을 기다릴 수 있도록 implement하였다. thread.h 내에 thread structure에
-semaphore structure를 추가하여 child가 만들어지고 child가 process를 수행하게 되면 sema_down을 통해 자신과 child만의 공유자원이 발생할 때까지 기다릴 수 있게 만들었다. 그 다음 child가 exit 단계에 접어들 때
-sema_up을 호출함으로써 공유자원이 발생하게 되는 순간이 child가 종료되는 순간이 되게끔 하여 wait를 구현하였다. 이때 wait의 return value는  tid가 invalid하거나 child가 kernel에 의해 terminated 되었으며 -1을
-return하며 child_tid를 가진 thread가 자신의 자식이 맞다면 이 child가 종료될 당시에 return했던 exit_status를 반환한다. 
+system call 내에서 wait를 호출하면 process_wait를 호출한다. process_wait는 현재 실행 중인 thread가 자신의 children이 process를 마치기 전에 먼저 종료되지 않게하는 기능의 함수이다. process가 child를 낳고 낳는 상황 또한 고려하기 위하여 process가 자신의 child만을 기다릴 수 있도록 implement하였다. thread.h 내에 thread structure에 semaphore structure를 추가하여 child가 만들어지고 child가 process를 수행하게 되면 sema_down을 통해 자신과 child만의 공유자원이 발생할 때까지 기다릴 수 있게 만들었다. 그 다음 child가 exit 단계에 접어들 때 sema_up을 호출함으로써 공유자원이 발생하게 되는 순간이 child가 종료되는 순간이 되게끔 하여 wait를 구현하였다. 이때 wait의 return value는  tid가 invalid하거나 child가 kernel에 의해 terminated 되었으면 -1을 return하며 child_tid를 가진 thread가 자신의 자식이 맞다면 이 child가 종료될 당시에 return했던 exit_status를 반환한다. 만약 이후에도 같은 process의 wait을 또 호출하면 그때에는 -1을 return하게끔 수정하였다.
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
@@ -166,12 +163,12 @@ false인지를 체크하여 false가 되면 exit(-1)을 호출하도록 구현�
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
 
-질문에서 언급한 상황을 위해 semaphore를 활용하여 synchronization을 진행했다.
+질문에서 언급한 상황을 위해 semaphore(sema_exec)를 활용하여 synchronization을 진행했다.
 process_execute 함수에서 thread_create를 실행하게 되면 새롭게 생성된 thread가 start_process 함수를 진행하게 된다. 그리고 start_process에서 load를 수행한다.
 따라서 다음과 같이 sema_down, sema_up을 위치시켰다.
 
-1. process_execute에서 thread_create 이후 sema_down 위치 : loading the new executable이 완료될 때까지 대기.
-2. start_process에서 load 함수가 호출된 이후 sema_up 위치 : load가 끝났음을 알림.
+1. process_execute에서 thread_create 이후 sema_down(&child thread->sema_exec) 위치 : loading the new executable이 완료될 때까지 대기.
+2. start_process에서 load 함수가 호출된 이후 sema_up(&cur->sema_exec) 위치 : load가 끝났음을 알림.
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -181,12 +178,16 @@ process_execute 함수에서 thread_create를 실행하게 되면 새롭게 생�
 >> there any special cases?
 
 1. P가 C가 exit되기 전에 wait(C)를 호출.
+semaphore child_sema를 사용하였다. wait에서 child_sema을 변수로 sema_down을 하고, child가 exit 될 때 sema_up을 진행하여 P가 C가 exit되는 것을 기다리도록 설정하였다.
 
 2. P가 C가 exit된 후에 wait(C)를 호출.
+상기술한 내용처럼 이를 위하여 pdt와 est field를 정의하였다. child가 먼저 exit되면서 parent의 pdt와 est에 자신의 exit_status와 pid 정보를 남기고 가므로 parent는 sema_down을 하자마자 바로 공유 자원을 
+얻는데 성공하고 return 구문으로 들어가 child의 exit_status를 가져와 return한다. 이때 child가 남긴 exit_status 값을 -1로 변경하여 이후 또 동일한 child를 wait하면 -1을 자연스레 가져오도록 하였다.
 
-3. P가 C가 exit되기 전에 waiting 없이 종료되었을 때 resource free.
-
-4. P가 C가 exit된 후에 waiting 없이 종료되었을 때 resource free.
+3. P가 C가 exit되기 전/후에 waiting 없이 종료되었을 때 resource free.
+process_execute에서 process마다 malloc을 통하여 pdt와 est의 주소 공간을 할당받으며, 이후 exit될 때 할당된 메모리를 모두 free하고 종료된다. 또한 fdt에 있는 모든 file을 close하여 free를 수행하여 메모리
+performance를 원활하게 하여 OOM test에서 정상 작동할 수 있었다. 전 후의 performance가 동일한 이유는 thread_exit에서 child가 자신의 parent를 father_tid를 통해 찾는데 성공하지 못하면 sema_up 등을 수행하기
+때문에 parent가 이미 exit한 상태면 자연스럽게 자기 자신의 resource free 단계로 넘어가므로 parent가 이미 terminate된 이후에 parent에게 접근할 일이 없다.
 
 ---- RATIONALE ----
 
@@ -198,7 +199,7 @@ Method1을 사용하였다. is_user_vaddr을 활용하여 user provided pointer�
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
 
-struct thread에 새로운 member로 **fdt와 next_fd를 추가하였다.
+struct thread에 새로운 member로 **fdt와 next_fd를 추가하였다. next_fd는 다음에 실행되는 file이 저장되는 위치를 가르킨다. 따라서 이러한 방식으로 file descriptor table을 구현하면 for문을 활용하지 않고 보다 빠르게 file을 table에 저장할 수 있다. 하지만 중간에 close된 file이 생겨 빈 공간이 생겼을 때 채우지 못하기 때문에 메모리적으로 비효율적인 측면이 존재한다.
 
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
