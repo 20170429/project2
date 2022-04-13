@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "threads/synch.h"
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
@@ -17,62 +18,10 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
-
+#include "threads/malloc.h"
+void argument_stack(char **parse, int count,void **esp);
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
-
-/* User stack에 argument를 set up. */
-void
-argument_stack (char **argv, int argc, void **stack_pointer)
-{
-  int arg_len;
-  int total_len = 0;
-  int word_align;
-
-  /* 1. argv[argc-1] ~ argv[0]가 가리키는 string을 stack에 set. 
-        ex) esp    -> \0
-            esp-1  -> x
-            esp-2  -> \0
-            esp-3  -> o
-            esp-4  -> h
-            esp-5  -> c
-            esp-6  -> e                                     */
-  for (int i = argc-1; i >= 0; i--)
-  {
-    arg_len = strlen (argv[i]) + 1;
-    *stack_pointer = *stack_pointer - arg_len;
-    strlcpy (*stack_pointer, argv[i], arg_len);
-    total_len = total_len + arg_len;
-    argv[i] = *stack_pointer;
-  }
-  
-  /* 2. word_align을 위해(32bit 맞추기) dummy값 추가. */
-  word_align = 4 - total_len % 4;
-
-  *stack_pointer = *stack_pointer - word_align;
-  **(uint8_t **)stack_pointer = 0;
-
-  /* 3. argv[argc] ~ argv[0] 값을 stack에 set. */
-  *stack_pointer = *stack_pointer - sizeof (char *);
-  **(char ***)stack_pointer = 0;
-  
-  for (int i = argc-1; i >= 0; i--)
-  {
-    *stack_pointer = *stack_pointer - sizeof (char *);
-    **(char ***)stack_pointer = argv[i];
-  }
-  
-  /* 4. argv, argc값을 stack에 set. */
-  *stack_pointer = *stack_pointer - sizeof (char **);
-  **(char ****)stack_pointer = *stack_pointer + 4; // argv[0]의 주소값.
-
-  *stack_pointer = *stack_pointer - sizeof (int);
-  **(int **)stack_pointer = argc;
-
-  /* 5. return address 값을 stack에 set. */
-  *stack_pointer = *stack_pointer - 4;
-  **(int **)stack_pointer = 0;
-}
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -80,39 +29,43 @@ argument_stack (char **argv, int argc, void **stack_pointer)
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
 process_execute (const char *file_name) 
-{
-  char *fn_copy;
+{ if(thread_current()->pdt == NULL){
+  thread_current()->pdt = (int *) malloc(sizeof (int) * 100);  // allocate 100 size 
+  thread_current()->est = (int *) malloc(sizeof (int) * 100);  // allocate 100 size
+}
+  char *fn_copy, *thread_name, *save_ptr, *fn_copy1;
+  struct list_elem *e;
+  struct thread *t;
   tid_t tid;
-
-  /* 새롭게 추가된 변수 */
-  struct thread *cur = thread_current ();
-  char *temp = (char *)malloc (sizeof (char) * (strlen (file_name) + 1));
-  char *token;
-  char *save_ptr;
-
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
-
-  /* file_name을 space를 기준으로 parse한 다음 첫 번째 token을 thread_name으로 설정 */
-  strlcpy (temp, file_name, strlen (file_name) + 1);
-  token = strtok_r (temp, " ", &save_ptr);
-
-  /* For exec-missing. */
-  if (filesys_open (token) == NULL) 
-    return -1; 
-
+  fn_copy1 = (char *) malloc(sizeof (char) * (strlen(fn_copy)+1));
+  strlcpy (fn_copy1, fn_copy, strlen(fn_copy)+1);
+  thread_name = strtok_r (fn_copy, " ", &save_ptr);
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (token, PRI_DEFAULT, start_process, fn_copy);
-  
-  /* child가 load되는 것을 대기한다. */
-  sema_down (&cur->load_wait);
-  
+    //oom
+  tid = thread_create (thread_name, PRI_DEFAULT , start_process, fn_copy1);
+  for (e = list_begin (&thread_current()->child_list); e != list_end (&thread_current()->child_list);
+       e = list_next (e))
+    {
+      t = list_entry (e, struct thread, child_elem);
+      if(t->tid == tid){
+      sema_down(&t->sema_exec);
+      break;
+      }
+    }
+    
+    if(!thread_current()->load_status){
+    palloc_free_page (fn_copy);  
+    return -1;
+    }
+  palloc_free_page (fn_copy);  
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    free (fn_copy1);   
   return tid;
 }
 
@@ -121,57 +74,42 @@ process_execute (const char *file_name)
 static void
 start_process (void *file_name_)
 {
-  char *file_name = file_name_;
+  
+  char *fn_copy, *file_name, *save_ptr, *token;
+  char **parse = palloc_get_page (0);
+  int j, i=0;
+  fn_copy = (char *) malloc(sizeof (char) *(strlen(file_name_)+1));
+  strlcpy (fn_copy, file_name_, strlen(file_name_)+1);
+  file_name = strtok_r (fn_copy, " ", &save_ptr);
   struct intr_frame if_;
   bool success;
-
-  /* 새롭게 추가된 변수 */
-  struct thread *cur = thread_current ();
-  char **parse;
-  int count = 0;
-  char *token;
-  char *save_ptr;
-  char *temp = (char *)malloc (sizeof (char) * (strlen (file_name) + 1));
-
-  /* command line을 parse하고 각 token(=parse)과 token의 갯수(=count)를 저장 */
-  strlcpy (temp, file_name, strlen (file_name) + 1);
-
-  for (token = strtok_r (file_name, " ", &save_ptr); token != NULL; token = strtok_r (NULL, " ", &save_ptr))
-    count++;
-
-  parse = (char **)malloc (sizeof (char *) * count); 
-  count = 0;
-  strlcpy (file_name, temp, strlen (temp) + 1); 
-
-  for (token = strtok_r (file_name, " ", &save_ptr); token != NULL; token = strtok_r (NULL, " ", &save_ptr))
-  {
-    parse[count] = token;
-    count++;
-  }
-  
-  file_name = parse[0]; // file 이름은 첫 번째 token이 되어야한다.
-  free (temp);
-
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
+    
   success = load (file_name, &if_.eip, &if_.esp);
-
-  /* stack set up */ 
-  if (success)
-    argument_stack (parse, count, &if_.esp); 
-  free (parse);
-
+  struct list l = thread_current()->sema_exec.waiters;
+  if(!list_empty(&l)){
+    struct thread *t = list_entry(list_begin(&l), struct thread, elem);
+    t->load_status = success;
+  }
+  sema_up(&thread_current()->sema_exec);  
   /* If load failed, quit. */
-  palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
-
-  /* load가 끝났으므로 parent를 위해 sema up. */
-  sema_up (&cur->parent->load_wait);
-
+   for (token = file_name; token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
+              parse[i] = (char *)malloc(sizeof (char)*128);    
+              strlcpy(parse[i++], token, strlen(token)+1);
+   }
+    argument_stack(parse, i, &if_.esp); 
+   // hex_dump((uintptr_t) if_.esp , if_.esp , PHYS_BASE - if_.esp , true);
+    free (file_name);
+    for(j=0;j<i;j++)
+    free(parse[j]);
+    palloc_free_page (parse);
+  
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -192,27 +130,29 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid)
+process_wait (tid_t child_tid) 
 {
-  struct thread *cur = thread_current ();
-  struct thread *t = NULL;
   struct list_elem *e;
-  int status;
-
-  for (e = list_begin (&cur->child); e != list_end (&cur->child); e = list_next (e)) 
-  {  
-    t = list_entry (e, struct thread, child_elem);
-    
-    if (child_tid == t->tid) 
+  struct thread *t;
+  int n, i;
+  for (e = list_begin (&thread_current()->child_list); e != list_end (&thread_current()->child_list);
+       e = list_next (e))
     {
-      sema_down (&t->exit_wait); // child의 exit를 wait.
-      status = t->exit_status; 
-      list_remove (&t->child_elem);
-      sema_up (&t->status_wait); // status가 update 되었으므로 sema up.
-      return status;
+      t = list_entry (e, struct thread, child_elem);
+      if(t->tid == child_tid){
+      sema_down(&thread_current()->child_sema);
+      break;
     }
   }
-  return -1;
+  for(i=0;i<100;i++)
+    if(thread_current()->pdt[i]==child_tid)
+    {
+      n = thread_current()->est[i];
+      break;
+    }
+  thread_current()->est[i] = -1;
+      return n;
+  
 }
 
 /* Free the current process's resources. */
@@ -221,14 +161,11 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
-
-  file_close (cur->running_file); // 현재 file close하고 allow write.
-  sema_up (&cur->exit_wait);      // parent를 위해 sema up.
-  sema_down (&cur->status_wait);  // parent가 exit_status를 update하는 것을 wait. 
-
-  for (int i = 0; i < 128; i++)
-    file_close (cur->fd_table[i]);
-
+  if(cur->deny_write){
+  file_allow_write(cur->running_file);
+  cur->deny_write = 0;
+  }
+  file_close(cur->running_file);
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -345,13 +282,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
-
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
-  if (t->pagedir == NULL) 
+  if (t->pagedir == NULL)
     goto done;
   process_activate ();
-
   /* Open executable file. */
   file = filesys_open (file_name);
   if (file == NULL) 
@@ -359,10 +294,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
-
-  file_deny_write (file); // 이미 실행되기 위해 open된 file의 변형을 막는다.
+  file_deny_write(file);
   t->running_file = file;
-
+  t->deny_write = 1;
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -375,7 +309,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: error loading executable\n", file_name);
       goto done; 
     }
-
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
   for (i = 0; i < ehdr.e_phnum; i++) 
@@ -385,7 +318,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
       if (file_ofs < 0 || file_ofs > file_length (file))
         goto done;
       file_seek (file, file_ofs);
-
       if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
         goto done;
       file_ofs += sizeof phdr;
@@ -434,7 +366,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
           break;
         }
     }
-
   /* Set up stack. */
   if (!setup_stack (esp))
     goto done;
@@ -446,6 +377,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
+  //file_close (file);
   return success;
 }
 
@@ -491,7 +423,7 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
      it then user code that passed a null pointer to system calls
      could quite likely panic the kernel by way of null pointer
      assertions in memcpy(), etc. */
-  if (phdr->p_vaddr < PGSIZE)
+   if (phdr->p_vaddr < PGSIZE)
     return false;
 
   /* It's okay. */
@@ -575,6 +507,33 @@ setup_stack (void **esp)
         palloc_free_page (kpage);
     }
   return success;
+}
+void
+argument_stack(char** parse, int count, void **esp){
+  int stack_count=0,i;
+  uint32_t adr[count];
+  for(i=count-1;i>=0;i--){
+    *esp-=strlen(parse[i])+1;
+    strlcpy(*esp, parse[i], strlen(parse[i])+1);
+    adr[i] = *esp;
+    stack_count +=strlen(parse[i])+1;
+  }
+  int word_align=0;
+  word_align = (4 - (stack_count%4))%4;
+  *esp -= word_align;
+  *esp = memset(*esp, 0, word_align);
+  *esp -=4;
+  **(uint32_t **) esp = 0;
+  for(i=count-1;i>=0;i--){
+    *esp-=4;
+    **(uint32_t **) esp =(uint32_t) adr[i];
+  }
+  *esp -=4;
+  **(uint32_t **) esp =(uint32_t) (*esp + 4);
+  *esp -=4;
+  **(uint32_t **) esp = count;
+  *esp -=4;
+  **(uint32_t **) esp = 0; 
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
