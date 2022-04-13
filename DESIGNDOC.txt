@@ -83,8 +83,6 @@ strtok (char *s, const char *delim)
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
-
-
 1. struct thread에 추가한 member들 (thread.h에 선언)
 
 struct list child_list: child들의 list.
@@ -105,8 +103,7 @@ void (*signal_handler[3])(void): signal handler pointer 배열. signal_handler[s
 
 2. struct lock filesys_lock (syscall.h에 선언)
 
-file 관련 함수들(open, read, write)에서 race condition을 방지하기 위해 사용된다.
-
+file 관련 함수들에서 race condition을 방지하기 위해 사용된다.
 
 ---- ALGORITHMS ----
 
