@@ -83,29 +83,30 @@ strtok (char *s, const char *delim)
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
-1. struct thread에 추가한 member들
 
-struct semaphore exit_wait: parent가 child의 exit를 기다리기 위해 사용되는 sema.       
-struct semaphore status_wait: parent가 exit status를 update하기 전에 child가 exit되는 것을 방지하는 sema.
-struct semaphore load_wait: parent가 child의 load를 기다리기 위해 사용되는 sema.     
-struct file *fd_table[64]: file descriptor table.          
-struct file *running_file: denying writes to excutable을 위해 현재 modify중인 file을 저장.    
-struct list child: child들의 list.
-struct thread *parent: parent pointer.                  
-struct list_elem child_elem: child list를 사용하기 위한 list elem.       
+
+1. struct thread에 추가한 member들 (thread.h에 선언)
+
+struct list child_list: child들의 list.
+struct list_elem child_elem: child list를 사용하기 위한 list elem.
+struct semaphore child_sema: parent가 child의 exit를 기다리기 위해 사용되는 sema.
+tid_t father_tid: child가 자신의 parents를 알 수 있게끔 추가한 변수.
+struct semaphore sema_exec: parent가 child가 성공적으로 load할때까지 기다리기 위한 sema. 
+struct file **fdt: file descriptor table
+struct file *running_file: denying writes to excutable을 위해 현재 modify중인 file을 저장.
+int *pdt, *est: 
+child가 parent가 child_sema를 걸기 전에 exit을 호출하고 죽으면 parent는 sema.waiters로부터 child를 찾을 수 없어 child가 exit할 때 자신의 exit_status를 부모에게 알릴 방법이 필요하다. 이를 위해 process descriptor table을 선언하여 child가 exit할 때 parents->pdt[next_pd]에 자신의 tid를 남기고, est[next_pd]에는 자신의 exit_status를 남긴다.
+int next_pd: current end position of process descriptor table
+int next_fd: same for file descriptor table
 int exit_status: exit할 때 출력되는 status 값. 
+int load_status: load가 성공했는지 알려주는 값.
+bool deny_write: running중인 executable이 writable인지 알려주는 값.
 void (*signal_handler[3])(void): signal handler pointer 배열. signal_handler[signum - 1]에 signum에 대응되는 signal handler pointer값이 저장된다. 
 
 2. struct lock filesys_lock (syscall.h에 선언)
 
 file 관련 함수들(open, read, write)에서 race condition을 방지하기 위해 사용된다.
 
->> B2: Describe how file descriptors are associated with open files.
->> Are file descriptors unique within the entire OS or just within a
->> single process?
-
-file descriptor는 실행중인 프로세스마다 정의된다. 따라서 프로세스마다 다른 file descriptor를 가지고 있으며 이는 프로세스가 각각 자신의 프로세스 내에서 filesystem을 관리할 수 있기에 용이하다. 
-file descriptor table은 file마다 고유의 fd를 부여해서 fd position entry에 file을 저장하므로 fd에 따른 file 관리가 이루어질 수 있게 한다.
 
 ---- ALGORITHMS ----
 
@@ -168,12 +169,12 @@ false인지를 체크하여 false가 되면 exit(-1)을 호출하도록 구현�
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
 
-질문에서 언급한 상황을 위해 semaphore(load_wait)를 활용하여 synchronization을 진행했다.
+질문에서 언급한 상황을 위해 semaphore를 활용하여 synchronization을 진행했다.
 process_execute 함수에서 thread_create를 실행하게 되면 새롭게 생성된 thread가 start_process 함수를 진행하게 된다. 그리고 start_process에서 load를 수행한다.
 따라서 다음과 같이 sema_down, sema_up을 위치시켰다.
 
-1. process_execute에서 thread_create 이후 sema_down(&cur->load_wait) 위치 : loading the new executable이 완료될 때까지 대기.
-2. start_process에서 load 함수가 호출된 이후 sema_up(&cur->parent->load_wait) 위치 : load가 끝났음을 알림.
+1. process_execute에서 thread_create 이후 sema_down 위치 : loading the new executable이 완료될 때까지 대기.
+2. start_process에서 load 함수가 호출된 이후 sema_up 위치 : load가 끝났음을 알림.
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -183,10 +184,8 @@ process_execute 함수에서 thread_create를 실행하게 되면 새롭게 생�
 >> there any special cases?
 
 1. P가 C가 exit되기 전에 wait(C)를 호출.
-semaphore exit_wait를 사용하였다. wait에서 exit_wait을 변수로 sema_down을 하고, child가 exit 될 때 sema_up을 진행하여 P가 C가 exit되는 것을 기다리도록 설정하였다.
 
 2. P가 C가 exit된 후에 wait(C)를 호출.
-wait에서 P의 child들을 모두 탐색하기 때문에 이미 C가 exit했다면 탐색에 실패하여 -1을 return한다.
 
 3. P가 C가 exit되기 전에 waiting 없이 종료되었을 때 resource free.
 
@@ -202,10 +201,7 @@ Method1을 사용하였다. is_user_vaddr을 활용하여 user provided pointer�
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
 
-struct thread에 새로운 member로 file descriptor table(fd_table)을 추가하였다.
-fd_table[fd]에는 해당 file pointer가 저장되어 있다.(fd에 대응되는 file이 없다면 NULL이 저장되어있다.) 배열의 크기는 64이다.
-위와 같은 방식으로 구현하면 for문을 활용하여 fd가 작은 값부터 file을 저장할 수 있어 memory를 효율적으로 쓸 수 있지만,
-file의 갯수가 64를 넘어가게 되면 overflow가 발생하는 단점이 있다.
+struct thread에 새로운 member로 **fdt와 next_fd를 추가하였다.
 
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
